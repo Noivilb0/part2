@@ -1,37 +1,34 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
-#include "std_msgs/msg/float32.hpp"
-#include <cmath>
 #include <iostream>
 #include <string>
 #include <thread>
 #include <chrono>
 
-class DistanceNode : public rclcpp::Node {
+class BoundaryCheckNode : public rclcpp::Node {
 public:
-    DistanceNode() : Node("distance_node") {
+    BoundaryCheckNode() : Node("boundary_check_node") {
         // Subscriber for robot odometry
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
-            "/odom", 10, std::bind(&DistanceNode::odomCallback, this, std::placeholders::_1));
+            "/odom", 10, std::bind(&BoundaryCheckNode::odomCallback, this, std::placeholders::_1));
 
-        // Publisher for distance (single robot monitoring)
-        distance_pub_ = this->create_publisher<std_msgs::msg::Float32>("/robot/distance", 10);
-
-        // Publisher to stop the robot
+        // Publisher to send velocity commands
         cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
 
-        // Initialize threshold and boundary values
-        distance_threshold_ = 1.0;
-        boundary_min_ = 1.0;
-        boundary_max_ = 10.0;
+        // Define boundary limits
+        x_min_ = 1.0;
+        x_max_ = 9.0;
+        y_min_ = 1.0;
+        y_max_ = 9.0;
+
+        in_bounds_ = true; // Assume robot starts within bounds
     }
 
     void spin() {
         rclcpp::Rate rate(10); // 10 Hz
         while (rclcpp::ok()) {
-            publishDistance();
-            checkProximity();
+            checkBoundary();
             rclcpp::spin_some(this->get_node_base_interface());
             rate.sleep();
         }
@@ -42,8 +39,8 @@ public:
         cmd.linear.x = linear;
         cmd.angular.z = angular;
 
-        // Publish command for 1 second
-        for (int i = 0; i < 10; ++i) {
+        // Publish command for 1 second unless out of bounds
+        for (int i = 0; i < 10 && in_bounds_; ++i) {
             cmd_pub_->publish(cmd);
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
@@ -56,45 +53,29 @@ public:
 
 private:
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-    rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr distance_pub_;
     rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
 
+    double x_min_, x_max_, y_min_, y_max_;
     nav_msgs::msg::Odometry robot_odom_;
-
-    double distance_threshold_;
-    double boundary_min_;
-    double boundary_max_;
+    bool in_bounds_;
 
     void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
         robot_odom_ = *msg;
     }
 
-    void publishDistance() {
-        std_msgs::msg::Float32 distance_msg;
-        distance_msg.data = calculateDistance(robot_odom_);
-        distance_pub_->publish(distance_msg);
-    }
+    void checkBoundary() {
+        double x = robot_odom_.pose.pose.position.x;
+        double y = robot_odom_.pose.pose.position.y;
 
-    double calculateDistance(const nav_msgs::msg::Odometry& odom) {
-        // Assuming the origin as a reference point
-        double dx = odom.pose.pose.position.x;
-        double dy = odom.pose.pose.position.y;
-        return std::sqrt(dx * dx + dy * dy);
-    }
-
-    void checkProximity() {
-        double distance = calculateDistance(robot_odom_);
-
-        // Stop the robot if it is close to the boundary or below the threshold
-        if (distance < distance_threshold_ || isOutOfBounds(robot_odom_)) {
-            stopRobot();
-            RCLCPP_WARN(this->get_logger(), "Robot is too close to a boundary or threshold. Movement stopped.");
+        if (x < x_min_ || x > x_max_ || y < y_min_ || y > y_max_) {
+            if (in_bounds_) {
+                stopRobot();
+                RCLCPP_WARN(this->get_logger(), "Robot is out of bounds! Movement stopped.");
+                in_bounds_ = false;
+            }
+        } else {
+            in_bounds_ = true; // Reset in_bounds_ flag if robot is within bounds
         }
-    }
-
-    bool isOutOfBounds(const nav_msgs::msg::Odometry& odom) {
-        return odom.pose.pose.position.x < boundary_min_ || odom.pose.pose.position.x > boundary_max_ ||
-               odom.pose.pose.position.y < boundary_min_ || odom.pose.pose.position.y > boundary_max_;
     }
 
     void stopRobot() {
@@ -105,22 +86,27 @@ private:
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
-    auto distance_node = std::make_shared<DistanceNode>();
+    auto boundary_check_node = std::make_shared<BoundaryCheckNode>();
 
-    std::thread distance_thread([&]() { distance_node->spin(); });
+    std::thread boundary_thread([&]() { boundary_check_node->spin(); });
 
     // Main loop for user commands
     while (rclcpp::ok()) {
         double linear, angular;
-        std::cout << "Enter linear velocity: ";
+        std::cout << "Enter linear velocity (m/s): ";
         std::cin >> linear;
-        std::cout << "Enter angular velocity: ";
+        std::cout << "Enter angular velocity (rad/s): ";
         std::cin >> angular;
 
-        distance_node->sendCommand(linear, angular);
+        if (boundary_check_node->in_bounds_) {
+            boundary_check_node->sendCommand(linear, angular);
+            std::cout << "Command sent. Use CTRL+C to stop.\n";
+        } else {
+            std::cout << "Robot is out of bounds. Adjust position manually to resume control.\n";
+        }
     }
 
-    distance_thread.join();
+    boundary_thread.join();
     rclcpp::shutdown();
     return 0;
 }
