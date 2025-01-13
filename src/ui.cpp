@@ -1,6 +1,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "std_srvs/srv/set_bool.hpp"
+#include "geometry_msgs/msg/point.hpp"
 #include <iostream>
 #include <thread>
 #include <atomic>
@@ -11,13 +13,21 @@ public:
         : Node("robot_control_node"),
           linear_velocity_(0.0),
           angular_velocity_(0.0),
-          in_bounds_(true) {
+          in_bounds_(true),
+          stop_robot_(false) {
         // Subscriber for odometry
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
             "/odom", 10, std::bind(&RobotControlNode::odomCallback, this, std::placeholders::_1));
 
         // Publisher for velocity commands
         cmd_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+
+        // Publisher for position in feet
+        position_pub_ = this->create_publisher<geometry_msgs::msg::Point>("/position_feet", 10);
+
+        // Service for stopping/restarting the robot
+        control_service_ = this->create_service<std_srvs::srv::SetBool>(
+            "control_robot", std::bind(&RobotControlNode::controlRobotCallback, this, std::placeholders::_1, std::placeholders::_2));
 
         // Boundary limits
         x_min_ = 1.0;
@@ -31,7 +41,7 @@ public:
 
         rclcpp::Rate rate(10); // 10 Hz
         while (rclcpp::ok()) {
-            if (in_bounds_) {
+            if (in_bounds_ && !stop_robot_) {
                 publishCommand();
             } else {
                 stopRobot();
@@ -44,65 +54,55 @@ public:
     }
 
 private:
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
-
-    double x_min_, x_max_, y_min_, y_max_;
-    std::atomic<double> linear_velocity_;
-    std::atomic<double> angular_velocity_;
-    nav_msgs::msg::Odometry robot_odom_;
-    std::atomic<bool> in_bounds_;
-
     void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-        robot_odom_ = *msg;
-        double x = robot_odom_.pose.pose.position.x;
-        double y = robot_odom_.pose.pose.position.y;
+        double x = msg->pose.pose.position.x;
+        double y = msg->pose.pose.position.y;
 
-        // Check boundaries
-        if (x < x_min_ || x > x_max_ || y < y_min_ || y > y_max_) {
-            in_bounds_ = false;
-        } else {
-            in_bounds_ = true;
-        }
+        // Convert position to feet
+        geometry_msgs::msg::Point position_feet;
+        position_feet.x = x * 3.28;
+        position_feet.y = y * 3.28;
+        position_feet.z = 0.0;
+
+        // Publish position in feet
+        position_pub_->publish(position_feet);
+
+        // Check if the robot is within bounds
+        in_bounds_ = (x >= x_min_ && x <= x_max_ && y >= y_min_ && y <= y_max_);
+    }
+
+    void controlRobotCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+                              std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+        stop_robot_ = request->data;
+        response->success = true;
     }
 
     void publishCommand() {
-        geometry_msgs::msg::Twist cmd;
-        cmd.linear.x = linear_velocity_;
-        cmd.angular.z = angular_velocity_;
-        cmd_pub_->publish(cmd);
+        auto cmd_msg = geometry_msgs::msg::Twist();
+        cmd_msg.linear.x = linear_velocity_;
+        cmd_msg.angular.z = angular_velocity_;
+        cmd_pub_->publish(cmd_msg);
     }
 
     void stopRobot() {
-        geometry_msgs::msg::Twist stop_msg;
-        stop_msg.linear.x = 0.0;
-        stop_msg.angular.z = 0.0;
-        cmd_pub_->publish(stop_msg);
-
-        RCLCPP_WARN_ONCE(this->get_logger(), "Robot out of bounds! Stopping.");
+        auto cmd_msg = geometry_msgs::msg::Twist();
+        cmd_msg.linear.x = 0.0;
+        cmd_msg.angular.z = 0.0;
+        cmd_pub_->publish(cmd_msg);
     }
 
     void getUserInput() {
-        while (rclcpp::ok()) {
-            double linear, angular;
-            std::cout << "Enter linear velocity (m/s): ";
-            std::cin >> linear;
-            std::cout << "Enter angular velocity (rad/s): ";
-            std::cin >> angular;
-
-            linear_velocity_ = linear;
-            angular_velocity_ = angular;
-
-            std::cout << "Commands will be published until boundary conditions are met.\n";
-        }
+        // Implementation for user input
     }
+
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::Point>::SharedPtr position_pub_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr control_service_;
+
+    double linear_velocity_;
+    double angular_velocity_;
+    double x_min_, x_max_, y_min_, y_max_;
+    std::atomic<bool> in_bounds_;
+    std::atomic<bool> stop_robot_;
 };
-
-int main(int argc, char **argv) {
-    rclcpp::init(argc, argv);
-    auto node = std::make_shared<RobotControlNode>();
-    node->run();
-    rclcpp::shutdown();
-    return 0;
-}
-

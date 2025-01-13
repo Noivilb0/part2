@@ -18,6 +18,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 # uncomment the following section in order to fill in
@@ -37,21 +38,25 @@ endif()
 
 ament_package()
 
+add_service_files(
+  FILES
+  ControlRobot.srv
+)
 
-
-
-
-
-
-
-
-
+generate_messages(
+  DEPENDENCIES
+  std_srvs
+)
 
 add_executable(ui src/ui.cpp)
 ament_target_dependencies(ui rclcpp geometry_msgs nav_msgs)
 
+add_executable(robot_control_node src/ui.cpp)
+ament_target_dependencies(robot_control_node rclcpp std_srvs geometry_msgs nav_msgs)
+
 install(TARGETS
   ui
+  robot_control_node
   DESTINATION lib/${PROJECT_NAME})
 
 
