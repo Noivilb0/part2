@@ -45,14 +45,12 @@ ament_package()
 
 
 
-add_executable(distance src/distance.cpp)
-ament_target_dependencies(distance rclcpp geometry_msgs nav_msgs)
+
 
 add_executable(ui src/ui.cpp)
 ament_target_dependencies(ui rclcpp geometry_msgs nav_msgs)
 
 install(TARGETS
-  distance
   ui
   DESTINATION lib/${PROJECT_NAME})
 
